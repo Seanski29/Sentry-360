@@ -1,36 +1,72 @@
 #include <Stepper.h>
-#define STEPS 2038  // 28BYJ-48 steps per revolution
 
-const int trigPin = A0; //Trigger is at PIN A0
-const int echoPin = A1; //Echo is at PIN A1
+#define STEPS 2038
 
-long duration; //Initializing duration as numerical
-int distance; //Initializing distance as numerical
-int stepCount = 0; //Initializing stepCount as zero
+const int trigPin = 6;
+const int echoPin = 7;
 
-Stepper stepper(STEPS, 8, 9, 10, 11); // Assigning Driver Module to Pins IN1 = 8 | IN2 = 9 | IN3 = 10 | IN4 = 11
+// UPDATED SETTINGS FOR 70° TILT
+const int FLOOR_DISTANCE = 80;    // Ignore floor echoes (80cm and closer)
+const int MAX_DETECTION_DISTANCE = 600; // Maximum range
 
-void setup() { // Setting the trigger pin as an output and echo pin as input
+// STEPPER CONFIGURATION
+const int DEFAULT_RPM = 5;
+const int STEPS_PER_READING = 10;
+Stepper stepper(STEPS, 8, 10, 9, 11);
+
+// Variables
+long duration;
+int distance;
+float angle = 0;
+bool initializationComplete = false;
+
+void setup() {
   pinMode(trigPin, OUTPUT);
   pinMode(echoPin, INPUT);
-  Serial.begin(9600); //
+  Serial.begin(9600);
+  stepper.setSpeed(DEFAULT_RPM);
+  
+  // Perform initialization - set current position as 0°
+  performInitialization();
+}
 
-  stepper.setSpeed(15);  // Maximum stable speed for 28BYJ-48
+void performInitialization() {
+  // Set current physical position as 0 degrees
+  angle = 0; // Whatever direction we're facing becomes 0°
+  
+  // Wait 2 seconds before starting
+  delay(2000);
+  
+  initializationComplete = true;
 }
 
 void loop() {
-  stepper.step(10);  // bigger step chunk per loop for faster rotation
-
-  distance = calculateDistance();
-
-  float angle = (stepCount * 15 * 360.0) / STEPS;
-  Serial.print(angle);
-  Serial.print(",");
-  Serial.print(distance);
-  Serial.println(".");
-
-  stepCount += 15;
-  if (stepCount >= STEPS) stepCount = 0;
+  // Only start normal operation after initialization is complete
+  if (!initializationComplete) {
+    return;
+  }
+  
+  static int stepCount = 0;
+  
+  stepper.step(1);
+  stepCount++;
+  
+  if (stepCount >= STEPS_PER_READING) {
+    angle += STEPS_PER_READING * (360.0 / STEPS);
+    if (angle >= 360.0) angle = 0;
+    
+    distance = calculateDistance();
+    
+    // ONLY send data to Processing if object is within floor distance
+    // No Serial Monitor output - cleaner communication
+    if (distance > 0 && distance < FLOOR_DISTANCE) {
+      Serial.print(angle, 1);
+      Serial.print(",");
+      Serial.println(distance);
+    }
+    
+    stepCount = 0;
+  }
 }
 
 int calculateDistance() {
@@ -39,8 +75,11 @@ int calculateDistance() {
   digitalWrite(trigPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
-
+  
   duration = pulseIn(echoPin, HIGH, 30000);
-  int distance = duration * 0.034 / 2;
-  return distance;
+  if (duration == 0) return 0;
+  
+  int dist = duration * 0.034 / 2;
+  
+  return (dist > MAX_DETECTION_DISTANCE) ? 0 : dist;
 }

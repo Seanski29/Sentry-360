@@ -1,311 +1,274 @@
-// PPI Radar Display - MOCK SIMULATION (No Arduino Required)
-// All serial code has been removed and replaced with a simulation.
+import processing.serial.*;
 
-// import processing.serial.*; // <<< REMOVED
-// Serial myPort; // <<< REMOVED
-PFont uiFont; // Font for all UI text
+Serial myPort;
+float currentAngle = 0;
+float currentDistance = 0;
+int radarRadius;
 
-float angle = 0;
-float distance = 0;
-float[] distanceMemory = new float[360];
-int[] sweepPersistence = new int[360]; // Array to store the sweep's "brightness"
+// Floor distance for display
+int FLOOR_DISTANCE = 80;
 
-// --- Visualization Parameters ---
-final int GRID_LINES = 12;    // Number of angular grid lines (360 / 12 = 30 degree sectors)
-final int RANGE_RINGS = 6;    // Number of concentric rings
-final int MAX_RANGE_CM = 600; // Simulated maximum range for text labels
-final int SWEEP_FADE_SPEED = 10; // How fast the green fan fades (higher is faster)
-final float TARGET_DECAY_RATE = 0.98; // How fast red lines fade (closer to 1.0 is slower)
-final int ALERT_DISTANCE = 200; // <<< NEW: Alert threshold in CM
-boolean intruderAlert = false; // <<< NEW: Global state for alert
+// Sweep system - MATCHES 5 RPM STEPPER
+float sweepAngle = 0;
+float sweepSpeed = 0.5; // degrees per frame (matches 5 RPM at 60 FPS)
+boolean initializationComplete = false;
+int initializationStartTime = 0;
 
-// --- Mock Data Parameters ---
-float currentMockAngle = 0; // <<< RE-ADDED
-float sweepSpeed = 1.0; // <<< RE-ADDED
-
-void setup() {
-  size(800, 800);
-  background(0);
-  frameRate(30); 
+// Object management
+class RadarObject {
+  float angle;
+  float distance;
+  int detectionTime;
+  float alpha;
+  boolean revealed;
   
-  // Initialize persistence array
-  for (int i = 0; i < 360; i++) {
-    sweepPersistence[i] = 0;
+  RadarObject(float a, float d) {
+    angle = a;
+    distance = d;
+    detectionTime = millis();
+    alpha = 0;
+    revealed = false;
   }
-  
-  // <<< NEW: Create and set the UI font
-  // "Monospaced" is a safe, cross-platform font that looks "technical"
-  uiFont = createFont("Monospaced", 16, true);
-  textFont(uiFont); // Set this as the default font
-  
-  // --- Initialize Serial Port (REMOVED) ---
-  // println(Serial.list()); 
-  // String portName = Serial.list()[0]; 
-  // myPort = new Serial(this, portName, 9600);
-  // myPort.bufferUntil('.'); 
 }
 
-// --- serialEvent() function (REMOVED) ---
+ArrayList<RadarObject> objects = new ArrayList<RadarObject>();
+
+void setup() {
+  size(800, 600);
+  
+  // Safe serial connection
+  try {
+    String[] ports = Serial.list();
+    if (ports.length > 0) {
+      myPort = new Serial(this, ports[0], 9600);
+      myPort.bufferUntil('\n');
+      println("Connected to: " + ports[0]);
+    }
+  } catch (Exception e) {
+    println("No Arduino found");
+  }
+  
+  radarRadius = min(width, height) / 2 - 50;
+  initializationStartTime = millis();
+  
+  println("System starting...");
+}
 
 void draw() {
-  // --- 0. CALCULATE DYNAMIC RADIUS ---
-  float radarPixelRadius = min(width, height) * 0.4;
+  background(0);
+  drawRadar();
   
-  // --- 1. MOCK DATA GENERATION (RE-ADDED) ---
-  
-  currentMockAngle += sweepSpeed;
-  if (currentMockAngle >= 360) {
-    currentMockAngle = 0;
-  }
-  
-  float mockDistance;
-  if (currentMockAngle >= 30 && currentMockAngle <= 70) { 
-    mockDistance = 250 + random(0, 100); 
-  } else if (currentMockAngle >= 130 && currentMockAngle <= 160) { 
-    mockDistance = 100 + random(0, 50);
-  } else if (currentMockAngle >= 250 && currentMockAngle <= 300) { 
-    mockDistance = 350 + random(0, 100);
+  if (initializationComplete) {
+    // Normal operation
+    updateSweep();
+    drawSweepTrail();
+    drawSweepLine();
+    updateObjects();
+    drawObjects();
   } else {
-    mockDistance = 0; 
-  }
-  
-  // Update the global angle and distance variables
-  angle = currentMockAngle;
-  distance = mockDistance;
-  int angleIndex = (int) currentMockAngle % 360;
-  
-  // Store new target data
-  if (distance > 0) {
-    distanceMemory[angleIndex] = distance;
-  }
-  
-  // Set current sweep angle to full brightness for the fan effect
-  sweepPersistence[angleIndex] = 255;
-  
-  
-  // --- 1b. NEW: Decay all non-active target blips ---
-  // This loop runs every frame and fades all targets that are *not*
-  // at the current sweep angle.
-  for (int i = 0; i < 360; i++) {
-    if (i != angleIndex) {
-      distanceMemory[i] *= TARGET_DECAY_RATE; // Make the line shorter
-      if (distanceMemory[i] < 1) distanceMemory[i] = 0; // Clear it if it's too small
+    // Auto-start after 3 seconds (Arduino is already running)
+    if (millis() - initializationStartTime > 3000) {
+      initializationComplete = true;
+      println("Radar sweep started");
     }
+    drawInitializationMessage();
   }
-
-  // --- 1c. NEW: Check for intruder alerts ---
-  // This loop checks *all* active blips. If any are too close, it triggers the alert.
-  intruderAlert = false; // Assume no alert
-  for (int i = 0; i < 360; i++) {
-    if (distanceMemory[i] > 0 && distanceMemory[i] <= ALERT_DISTANCE) {
-      intruderAlert = true;
-      break; // Found one, no need to check the rest
-    }
-  }
-
-  // --- 2. RADAR DISPLAY AND VISUALIZATION ---
   
-  background(0); 
-  translate(width / 2, height / 2); // Move origin to center
+  drawText();
+}
 
-  // 2a. Draw Fading Green Fan (Filled Arcs)
-  for (int i = 0; i < 360; i++) {
-    if (sweepPersistence[i] > 0) {
-      fill(0, 255, 0, sweepPersistence[i]); 
-      noStroke(); 
-      
-      // Fix for arc direction
-      float startAngle = radians(-i - 0.5); 
-      float endAngle = radians(-i + 0.5);   
-      
-      arc(0, 0, radarPixelRadius * 2, radarPixelRadius * 2, startAngle, endAngle, PIE);
-      
-      sweepPersistence[i] -= SWEEP_FADE_SPEED; 
-    }
-  }
-
-  // 2b. Draw Grid and Range Rings
-  strokeWeight(4); // Fatter grid lines
-  stroke(0, 255, 0, 150); // Semi-transparent Green
+void drawRadar() {
+  pushMatrix();
+  translate(width/2, height/2);
   noFill();
+  stroke(98, 245, 31, 100);
+  strokeWeight(1);
   
-  for (int i = 1; i <= RANGE_RINGS; i++) {
-    float ringDiameter = (float) i / RANGE_RINGS * (radarPixelRadius * 2);
-    ellipse(0, 0, ringDiameter, ringDiameter);
+  // Radar circles
+  for (int i = 1; i <= 5; i++) {
+    ellipse(0, 0, radarRadius * i * 2/5, radarRadius * i * 2/5);
   }
   
-  for (int i = 0; i < GRID_LINES; i++) {
-    float lineAngle = radians(i * (360 / GRID_LINES));
-    float x = radarPixelRadius * cos(lineAngle);
-    float y = -radarPixelRadius * sin(lineAngle);
+  // Floor boundary (red)
+  stroke(255, 0, 0, 80);
+  float floorRadius = radarRadius * FLOOR_DISTANCE / 100;
+  ellipse(0, 0, floorRadius * 2, floorRadius * 2);
+  
+  // Angle lines
+  stroke(98, 245, 31, 80);
+  for (int a = 0; a < 360; a += 30) {
+    float x = radarRadius * cos(radians(a));
+    float y = radarRadius * sin(radians(a));
     line(0, 0, x, y);
   }
   
-  // 2c. Draw Target Echoes (Thick Radial Lines)
-  stroke(255, 0, 0); // Bright Red
-  strokeWeight(4);   
-  
-  for (int i = 0; i < 360; i++) {
-    float r_cm = distanceMemory[i];
-    
-    // Scale distance (cm) to pixel radius
-    float r_pixels = map(r_cm, 0, MAX_RANGE_CM, 0, radarPixelRadius);
-    r_pixels = constrain(r_pixels, 0, radarPixelRadius);
-    
-    // Only draw if there's a valid distance
-    if (r_pixels > 1) { 
-      float x = r_pixels * cos(radians(i));
-      float y = -r_pixels * sin(radians(i)); 
-      
-      // Draw a thick line from the center to the target
-      line(0, 0, x, y); 
-    }
-  }
-
-  // 2d. Draw (Main) Sweep Line (on top of everything)
-  stroke(0, 255, 0); // Bright Green
-  strokeWeight(3); // Fatter main sweep line
-  float sweepX = radarPixelRadius * cos(radians(angle)); 
-  float sweepY = -radarPixelRadius * sin(radians(angle));
-  line(0, 0, sweepX, sweepY);
-
-  // 2e. Add Range Labels (Dynamic Text Size)
-  fill(0, 255, 0);
-  float labelSize = max(10, radarPixelRadius * 0.05); 
-  textFont(uiFont, labelSize * 0.9); // <<< Apply the new font
-  textAlign(CENTER, TOP); // <<< Align text to be drawn *above* the line
-  
-  for (int i = 1; i <= RANGE_RINGS; i++) {
-    float labelX = (float) i / RANGE_RINGS * radarPixelRadius; 
-    float rangeValue = (float) i * (MAX_RANGE_CM / RANGE_RINGS);
-    // <<< Draw label text just above the 0-degree (right) horizontal line
-    text(nf(rangeValue, 0, 0), labelX, 5); 
-  }
-  
-  // 2f. Draw UI Elements (Dynamic Text Size and Position)
-  float uiTextSize = max(12, width * 0.02); 
-  textFont(uiFont, uiTextSize); // <<< Apply the new font
-  textAlign(LEFT);
-  resetMatrix(); 
-  fill(0, 255, 0);
-  
-  float textY = height - (uiTextSize * 1.5);
-  
-  text("Sentry 360", 20, textY);
-  textAlign(RIGHT);
-  // <<< MODIFIED: Increased spacing by changing 10 to 15 to prevent overlap
-  text("Angle: " + nf(angle, 0, 0) + "°", width - (uiTextSize * 15), textY);
-  text("Distance: " + nf(distance, 0, 0) + " cm", width - 20, textY);
-  
-  // --- 2g. NEW: Draw Angular Labels ---
-  translate(width / 2, height / 2); // Go back to center
-  fill(0, 255, 0); // Green
-  textFont(uiFont, labelSize * 0.9); // Use the new font
-  noStroke();
-
-  for (int i = 0; i < 360; i += 30) { // Every 30 degrees (matches GRID_LINES)
-      // Calculate the position just outside the radar circle
-      float labelRadius = radarPixelRadius + (labelSize * 2.0); // Add padding
-      float x = labelRadius * cos(radians(i));
-      float y = -labelRadius * sin(radians(i)); // Use -sin for correct Processing Y-axis
-
-      // Adjust text alignment based on position for readability
-      if (i == 0 || i == 360) { // Right
-          textAlign(LEFT, CENTER);
-      } else if (i == 180) { // Left
-          textAlign(RIGHT, CENTER);
-      } else if (i == 90) { // Top
-          textAlign(CENTER, BOTTOM);
-      } else if (i == 270) { // Bottom
-          textAlign(CENTER, TOP);
-      } else if (i > 0 && i < 90) { // Top-Right
-          textAlign(LEFT, BOTTOM);
-      } else if (i > 90 && i < 180) { // Top-Left
-          textAlign(RIGHT, BOTTOM);
-      } else if (i > 180 && i < 270) { // Bottom-Left
-          textAlign(RIGHT, TOP);
-      } else if (i > 270 && i < 360) { // Bottom-Right
-          textAlign(LEFT, TOP);
-      }
-
-      text(i + "°", x, y);
-  }
-  
-  // --- 2h. NEW: Draw Intruder Alert (Upper Left) ---
-  if (intruderAlert) {
-    // Logic for the blink (1 second interval: 0.5s on, 0.5s off)
-    boolean isBlinkOn = (millis() % 1000 < 500);
-    
-    // Draw the light bulb
-    // Use resetMatrix() to draw in corner, but must re-translate for button
-    resetMatrix(); // Draw relative to screen corner
-    float lightX = 25;
-    float lightY = 30;
-    float lightDiameter = uiTextSize * 1.5;
-    
-    if (isBlinkOn) {
-      fill(255, 0, 0); // Bright Red
-    } else {
-      fill(100, 0, 0); // Dark Red (Off)
-    }
-    noStroke();
-    ellipse(lightX, lightY, lightDiameter, lightDiameter);
-    
-    // Draw the text (only when blink is ON)
-    if (isBlinkOn) {
-      fill(255, 0, 0); // Bright Red Text
-      textAlign(LEFT, CENTER);
-      textFont(uiFont, uiTextSize);
-      text("WARNING! INTRUDER ALERT!", lightX + lightDiameter + 10, lightY);
-    }
-  }
-
-  // --- 2i. NEW: Draw Reset Button (was 2h) ---
-  // Must be drawn *after* resetMatrix() to use screen coordinates
-  resetMatrix();
-  float btnW = uiTextSize * 6; // Button width
-  float btnH = uiTextSize * 2; // Button height
-  float btnX = width - btnW - 20; // X position (20px from right edge)
-  float btnY = 20; // Y position (20px from top edge)
-
-  // Draw button background
-  // Check if mouse is hovering over it
-  if (mouseX > btnX && mouseX < btnX + btnW && mouseY > btnY && mouseY < btnY + btnH) {
-    fill(0, 200, 0); // Brighter green on hover
-  } else {
-    fill(0, 150, 0); // Dark green
-  }
-  stroke(0, 255, 0); // Bright green border
-  strokeWeight(2);
-  rect(btnX, btnY, btnW, btnH, 5); // Rounded corners
-
-  // Draw button text
-  fill(0, 255, 0); // Bright green text
-  textAlign(CENTER, CENTER);
-  textFont(uiFont, uiTextSize);
-  text("RESET", btnX + btnW / 2, btnY + btnH / 2);
+  popMatrix();
 }
 
-// --- NEW FUNCTION: Handles Mouse Clicks ---
-void mousePressed() {
-  // Calculate button dimensions again (since it's dynamic)
-  float uiTextSize = max(12, width * 0.02); 
-  float btnW = uiTextSize * 6;
-  float btnH = uiTextSize * 2;
-  float btnX = width - btnW - 20;
-  float btnY = 20;
+void drawInitializationMessage() {
+  pushMatrix();
+  translate(width/2, height/2);
+  
+  fill(255, 255, 0);
+  textAlign(CENTER, CENTER);
+  textSize(24);
+  text("INITIALIZING...", 0, -20);
+  
+  textSize(16);
+  int elapsed = (millis() - initializationStartTime) / 1000;
+  int countdown = max(0, 3 - elapsed);
+  text("Starting in: " + countdown + "s", 0, 10);
+  
+  popMatrix();
+}
 
-  // Check if the click was inside the button
-  if (mouseX > btnX && mouseX < btnX + btnW && mouseY > btnY && mouseY < btnY + btnH) {
-    // --- Perform Reset ---
-    currentMockAngle = 0;
-    angle = 0;
-    intruderAlert = false; // <<< NEW: Reset alert state
+void updateSweep() {
+  sweepAngle += sweepSpeed;
+  if (sweepAngle >= 360) sweepAngle = 0;
+}
+
+void drawSweepTrail() {
+  pushMatrix();
+  translate(width/2, height/2);
+  
+  for (int i = 0; i < 45; i++) {
+    float trailAngle = sweepAngle - i;
+    if (trailAngle < 0) trailAngle += 360;
     
-    // Clear all memory arrays for a full visual reset
-    for (int i = 0; i < 360; i++) {
-      distanceMemory[i] = 0;
-      sweepPersistence[i] = 0;
+    float alpha = map(i, 0, 45, 255, 0);
+    stroke(0, 200, 0, alpha);
+    strokeWeight(1);
+    line(0, 0, radarRadius * cos(radians(trailAngle)), radarRadius * sin(radians(trailAngle)));
+  }
+  
+  popMatrix();
+}
+
+void drawSweepLine() {
+  pushMatrix();
+  translate(width/2, height/2);
+  stroke(0, 255, 0);
+  strokeWeight(2);
+  line(0, 0, radarRadius * cos(radians(sweepAngle)), radarRadius * sin(radians(sweepAngle)));
+  popMatrix();
+}
+
+void updateObjects() {
+  // Use temporary list for removal to avoid concurrent modification
+  ArrayList<RadarObject> objectsToRemove = new ArrayList<RadarObject>();
+  
+  for (RadarObject obj : objects) {
+    // Calculate angle difference
+    float angleDiff = abs(sweepAngle - obj.angle);
+    if (angleDiff > 180) angleDiff = 360 - angleDiff;
+    
+    // Reveal object when sweep passes over it
+    if (angleDiff < 5 && !obj.revealed) {
+      obj.revealed = true;
+      obj.detectionTime = millis();
+      obj.alpha = 255;
     }
+    
+    // Handle object fading
+    if (obj.revealed) {
+      int elapsed = millis() - obj.detectionTime;
+      
+      if (elapsed > 3000) {
+        objectsToRemove.add(obj); // Mark for removal
+      } else if (elapsed > 1000) {
+        obj.alpha = map(elapsed, 1000, 3000, 255, 0);
+      }
+    }
+  }
+  
+  // Remove marked objects AFTER iteration
+  objects.removeAll(objectsToRemove);
+}
+
+void drawObjects() {
+  pushMatrix();
+  translate(width/2, height/2);
+  
+  // Safe iteration - no modification during draw
+  for (RadarObject obj : objects) {
+    if (obj.revealed && obj.alpha > 0) {
+      float radius = map(obj.distance, 0, FLOOR_DISTANCE, 0, radarRadius);
+      float x = radius * cos(radians(obj.angle));
+      float y = radius * sin(radians(obj.angle));
+      
+      fill(255, 0, 0, obj.alpha);
+      noStroke();
+      ellipse(x, y, 12, 12);
+    }
+  }
+  
+  popMatrix();
+}
+
+void drawText() {
+  fill(98, 245, 31);
+  textSize(16);
+  textAlign(LEFT);
+  
+  text("SENTRY 360", 20, 30);
+  text("Sweep Angle: " + nf(sweepAngle, 1, 1) + "°", 20, 50);
+  
+  if (initializationComplete) {
+    text("Stepper Angle: " + nf(currentAngle, 1, 1) + "°", 20, 70);
+    text("Distance: " + (currentDistance > 0 ? nf(currentDistance, 1, 0) + "cm" : "---"), 20, 90);
+    
+    fill(0, 255, 0);
+    text("STATUS: NORMAL", 20, 120);
+    
+    // Count visible objects - SAFE iteration
+    fill(98, 245, 31);
+    int visibleObjects = 0;
+    for (RadarObject obj : objects) {
+      if (obj.revealed && obj.alpha > 0) {
+        visibleObjects++;
+      }
+    }
+    text("Objects: " + visibleObjects, 20, 140);
+  } else {
+    fill(255, 255, 0);
+    text("STATUS: INITIALIZING", 20, 70);
+  }
+  
+  text("Floor: " + FLOOR_DISTANCE + "cm", 20, 160);
+  text("Speed: 5 RPM", 20, 180);
+  
+  if (myPort != null) {
+    text("Arduino: CONNECTED", 20, 200);
+  } else {
+    fill(255, 0, 0);
+    text("Arduino: DISCONNECTED", 20, 200);
+  }
+}
+
+void serialEvent(Serial p) {
+  try {
+    String data = p.readStringUntil('\n');
+    if (data != null) {
+      data = trim(data);
+      
+      String[] parts = split(data, ',');
+      if (parts.length == 2) {
+        currentAngle = float(parts[0]);
+        currentDistance = float(parts[1]);
+        
+        // Start immediately when we receive first data
+        if (!initializationComplete) {
+          initializationComplete = true;
+          println("First data received - radar active");
+        }
+        
+        // Store object
+        if (currentDistance > 0 && currentDistance < FLOOR_DISTANCE) {
+          objects.add(new RadarObject(currentAngle, currentDistance));
+        }
+      }
+    }
+  } catch (Exception e) {
+    // Silent error
   }
 }
